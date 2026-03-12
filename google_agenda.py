@@ -6,14 +6,17 @@ import os
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 CREDENTIALS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 
+''' "Lucas Paixao": "lucas.paixao@queonetics.com",
+    "Lucas Dias": "lucas.dias@queonetics.com",'''
 AGENDAS = {
     "Rene Filho": "rene.filho@queonetics.com",
     "Diego Ribeiro": "diego.ribeiro@queonetics.com",
     "Felipe Silva": "felipe.silva@queonetics.com",
-    "Lucas Paixao": "lucas.paixao@queonetics.com",
-    "Lucas Dias": "lucas.dias@queonetics.com",
     "Mateus Accioly": "mateus.accioly@queonetics.com",
-    "Matheus Eduardo": "matheus.eduardo@queonetics.com"
+    "Lucas Dias": "lucas.dias@queonetics.com",
+    "Matheus Eduardo": "matheus.eduardo@queonetics.com",
+    "Lucas Paixao": "lucas.paixao@queonetics.com"
+    
 }
 
 def obter_agenda_do_dia(nome):

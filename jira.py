@@ -9,6 +9,7 @@ load_dotenv()
 JIRA_BASE_URL = os.getenv("JIRA_BASE_URL")
 JIRA_USER = os.getenv("JIRA_USER")
 JIRA_PASSWORD = os.getenv("JIRA_PASSWORD")
+CUSTOM_TECNICO_CAMPO = os.getenv("JIRA_ID_TECNICO")
 
 JQL_PENDENTES = (
     'project IN (MONITORAR, PROMONITOR) '
@@ -21,7 +22,10 @@ JQL_PENDENTES = (
     ')'
 )
 
+
 def testar_conexao_jira():
+    """Testa se a autenticação com o Jira está funcionando"""
+    
     response = requests.get(
         f"{JIRA_BASE_URL}/rest/api/2/myself",
         auth=HTTPBasicAuth(JIRA_USER, JIRA_PASSWORD),
@@ -29,12 +33,14 @@ def testar_conexao_jira():
     )
 
     if response.status_code != 200:
-        raise Exception("Usuario ou senha do Jira invalidos")
+        raise Exception("Usuário ou senha do Jira inválidos")
 
     return True
 
 
 def obter_chamados_pendentes():
+    """Retorna quantidade total de chamados pendentes"""
+
     testar_conexao_jira()
 
     params = {
@@ -61,11 +67,13 @@ def obter_chamados_pendentes():
 
 
 def obter_chamados_pendentes_por_responsavel():
+    """Retorna chamados agrupados por responsável"""
+
     testar_conexao_jira()
 
     params = {
         "jql": JQL_PENDENTES,
-        "fields": "key,assignee,updated",
+        "fields": f"key,assignee,updated,{CUSTOM_TECNICO_CAMPO}",
         "maxResults": 100
     }
 
@@ -81,12 +89,36 @@ def obter_chamados_pendentes_por_responsavel():
 
     issues = response.json().get("issues", [])
     hoje = datetime.now()
+
     resultado = {}
+    chaves_processadas = set()  # evita duplicação
 
     for issue in issues:
-        fields = issue["fields"]
-        assignee = fields.get("assignee")
 
+        chave = issue["key"]
+
+        if chave in chaves_processadas:
+            continue
+
+        chaves_processadas.add(chave)
+
+        fields = issue["fields"]
+
+        raw_tecnico = fields.get(CUSTOM_TECNICO_CAMPO)
+        tecnico = "Não informado"
+
+        if isinstance(raw_tecnico, dict):
+            tecnico = raw_tecnico.get("value", "Não informado")
+
+        elif isinstance(raw_tecnico, list) and raw_tecnico:
+            item = raw_tecnico[0]
+            if isinstance(item, dict):
+                tecnico = item.get("value", "Não informado")
+
+        elif isinstance(raw_tecnico, str):
+            tecnico = raw_tecnico
+
+        assignee = fields.get("assignee")
         responsavel = assignee["displayName"] if assignee else "Sem responsável"
 
         data_atualizacao = datetime.strptime(
@@ -97,11 +129,36 @@ def obter_chamados_pendentes_por_responsavel():
         dias_pendentes = (hoje - data_atualizacao).days
 
         chamado = {
-            "chave": issue["key"],
+            "chave": chave,
+            "tecnico": tecnico,
             "atualizado_em": data_atualizacao.strftime("%d/%m/%Y"),
             "dias_pendentes": dias_pendentes
         }
 
         resultado.setdefault(responsavel, []).append(chamado)
+
+    return resultado
+
+
+def separar_pendencias(dados, somente_criticos=False):
+    """
+    Filtra chamados críticos.
+    Críticos = mais de 2 dias sem atualização
+    """
+
+    resultado = {}
+
+    for responsavel, chamados in dados.items():
+
+        if somente_criticos:
+            filtrados = [
+                c for c in chamados
+                if c["dias_pendentes"] >= 2
+            ]
+        else:
+            filtrados = chamados
+
+        if filtrados:
+            resultado[responsavel] = filtrados
 
     return resultado

@@ -1,15 +1,13 @@
-# Ambiente virtual
 venv/
 .env
 
-# Tokens e credenciais
 token_telegram.py
 credentials.json
 
-# Cache Python
 __pycache__/
 *.pyc
 
-# IDE
+
 .vscode/
 .idea/
+credenciais_telegram.txt
