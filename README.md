@@ -115,8 +115,6 @@ python bot.py
 ## 📌 Status do Projeto
 
 🟢 Em produção local
-🟡 Deploy 24/7 pendente
-🟡 Sistema de alertas automáticos planejado
 
 ---
 
