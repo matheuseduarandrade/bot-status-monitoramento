@@ -162,3 +162,30 @@ def separar_pendencias(dados, somente_criticos=False):
             resultado[responsavel] = filtrados
 
     return resultado
+
+def buscar_agendamentos_hoje():
+
+    url = f"{JIRA_BASE_URL}/rest/api/2/search"
+
+    jql = """
+    project in (PROMONITOR, MONITORAR)
+    AND status in ("MONITORAMENTO - A FAZER", "A FAZER - MONITORAMENTO PROJETOS")
+    AND "Agendamento" IS NOT EMPTY
+    AND "Agendamento" >= startOfDay()
+    AND "Agendamento" <= endOfDay()
+    ORDER BY "Agendamento" ASC
+    """
+
+    response = requests.get(
+        url,
+        params={
+            "jql": jql,
+            "maxResults": 500
+        },
+        auth=HTTPBasicAuth(JIRA_USER, JIRA_PASSWORD),
+        headers={"Accept": "application/json"}
+    )
+
+    data = response.json()
+
+    return data.get("issues", [])

@@ -67,9 +67,10 @@ def menu_principal(user_id):
         markup.add(
             InlineKeyboardButton("📊 Status", callback_data="menu_status"),
             InlineKeyboardButton("📋 Pendencias", callback_data="menu_pendencias"),
-            InlineKeyboardButton("📊 Projetos", callback_data="menu_projetos"),
             InlineKeyboardButton("📅 Todas Agendas", callback_data="menu_agendas_admin"),
+            InlineKeyboardButton("🛎️ Chamados do dia", callback_data="menu_chamados_dia"),
             InlineKeyboardButton("⚙️ Configurações", callback_data="menu_config")
+            
         )
     return markup
 
@@ -348,8 +349,13 @@ def callbacks(call):
     elif call.data == "menu_telemetria":
         bot.answer_callback_query(call.id, "Módulo em desenvolvimento...", show_alert=True)
 
+from threading import Thread
+from alerta_agendamentos import iniciar_alerta
 
-print("Bot rodando...")
+Thread(target=iniciar_alerta, daemon=True).start()
+
+
+print("\nBot rodando...")
 
 while True:
     try:
