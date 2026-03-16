@@ -1,128 +1,179 @@
 # 🤖 Status Monitoramento — Bot Telegram Corporativo
 
-Bot corporativo em **Python** para monitoramento operacional, integrado ao **Jira** e **Google Calendar**, com foco em visibilidade de chamados, agendas individuais e gestão administrativa via Telegram.
+![Python](https://img.shields.io/badge/Python-3.10+-blue)
+![Telegram Bot](https://img.shields.io/badge/Telegram-Bot-blue)
+![Jira](https://img.shields.io/badge/Jira-Integration-0052CC)
+![Google Calendar](https://img.shields.io/badge/Google-Calendar-red)
+![Status](https://img.shields.io/badge/Status-Active%20Development-green)
+
+Bot corporativo desenvolvido em **Python** para monitoramento operacional, integrado ao **Jira** e **Google Calendar**, com foco em **visibilidade de chamados, agendas individuais e gestão administrativa diretamente no Telegram**.
 
 ---
 
 ## 📌 Visão Geral
 
-O **Status Monitoramento** foi criado para centralizar informações críticas do dia a dia operacional diretamente no Telegram, evitando acessos manuais a múltiplas ferramentas.
+O **Status Monitoramento** centraliza informações críticas do dia a dia operacional diretamente no **Telegram**, eliminando a necessidade de acessar múltiplos sistemas manualmente.
 
-Ele permite que:
+Com ele é possível:
 
-* Operadores vejam **apenas sua própria agenda**
-* Gestores tenham **visão geral de chamados, agendas e status**
-* O time acompanhe **chamados pendentes por responsável**, com tempo sem atualização
+* 📊 Consultar **status de chamados no Jira**
+* 📅 Visualizar **agenda individual ou da equipe**
+* ⏱️ Monitorar **tempo sem atualização de chamados**
+* 🔔 Receber **alertas automáticos de agendamentos**
+* ⚙️ Gerenciar informações operacionais via bot
 
 ---
 
 ## 🚀 Funcionalidades
 
 ### 👤 Operador
-
-* 📅 Visualizar **agenda do dia** (Google Calendar)
-* Recebe apenas informações relacionadas ao seu usuário
+* 📅 Visualizar **agenda do dia**
+* 🔔 Receber **alertas automáticos de agendamentos**
+* Acesso apenas às informações relacionadas ao seu usuário
 
 ### 👑 Administrador / Gestor
 
-* 📊 **Status geral de chamados** no Jira
-* 📋 **Chamados pendentes por responsável**
+#### 📊 Status Geral de Chamados
+Consulta consolidada dos chamados nos projetos monitorados do **Jira**.
 
-  * Quantidade
-  * Chave do chamado (ex: MONITORAR-1234)
-  * Data da última atualização
-  * Dias sem movimentação
-* 📅 Visualizar **agenda de toda a equipe**
-* ⚙️ Acesso a configurações do sistema
+#### 📋 Chamados Pendentes por Responsável
+O bot exibe:
+* Quantidade de chamados
+* Chave do chamado (`MONITORAR-1234`)
+* Data da última atualização
+* Dias sem movimentação
+
+> [!TIP]
+> Isso permite identificar rapidamente **chamados parados ou sem atualização**.
+
+#### 📅 Agenda da Equipe
+Gestores podem visualizar:
+* Agenda individual
+* Agenda consolidada da equipe
+
+#### 🔔 Alertas Automáticos de Agendamentos
+O bot monitora o **Google Calendar** e envia alertas automáticos no Telegram.
+
+**Exemplo:**
+> ⚠️ **AGENDAMENTO HOJE**
+> **Responsável:** João
+> **Cliente:** Empresa X
+> **Horário:** 14:00
 
 ---
 
 ## 🔗 Integrações
 
 ### Jira
-
-* Consulta via **JQL**
-* Autenticação Basic (usuário + token/senha)
-* Projetos monitorados:
-
-  * `MONITORAR`
-  * `PROMONITOR`
+Consulta de chamados utilizando **JQL**.
+* **Autenticação:** Basic Auth (Usuário + Token/Senha)
+* **Projetos monitorados:** `MONITORAR`, `PROMONITOR`
 
 ### Google Calendar
-
-* Uso de **Service Account**
-* Acesso somente leitura
-* Agendas individuais por e-mail corporativo
+Integração via **Service Account**.
+* **Permissões:** Acesso somente leitura
+* **Consulta:** Agendas individuais por e-mail corporativo
 
 ---
 
-## 🧱 Estrutura do Projeto
+## 🏗️ Arquitetura do Sistema
 
+
+
+```text
+             ┌──────────────────┐
+             │    Telegram      │
+             │      Bot         │
+             └─────────┬────────┘
+                       │
+                       │
+                ┌──────▼──────┐
+                │   bot.py    │
+                │ (Controller)│
+                └──────┬──────┘
+                       │
+        ┌──────────────┼──────────────┐
+        │                              │
+ ┌──────▼──────┐               ┌──────▼──────┐
+ │   jira.py   │               │google_agenda│
+ │ Integração  │               │     .py     │
+ │   Jira API  │               │Google API   │
+ └──────┬──────┘               └──────┬──────┘
+        │                              │
+  ┌─────▼─────┐                ┌──────▼─────┐
+  │   Jira    │                │ Google     │
+  │  Cloud    │                │ Calendar   │
+  └───────────┘                └────────────┘
+
+            ┌─────────────────────┐
+            │ alerta_agendamentos │
+            │      .py            │
+            │ Monitoramento       │
+            │ automático          │
+            └─────────────────────┘
+```
+
+🧱 Estrutura do Projeto
 ```
 BOT-TELEGRAM/
 │
-├── bot.py                 # Arquivo principal do bot
-├── jira.py                # Integração com Jira
-├── google_agenda.py       # Integração com Google Calendar
-├── requirements.txt       # Dependências
-├── .env                   # Variáveis de ambiente (NÃO versionar)
-├── .env.example           # Exemplo de variáveis
-├── .gitignore             # Arquivos ignorados pelo Git
-├── credentials.json       # Credencial Google (NÃO versionar)
+├── bot.py
+├── jira.py
+├── google_agenda.py
+├── alerta_agendamentos.py
+│
+├── requirements.txt
+│
+├── .env
+├── .env.example
+│
+├── .gitignore
+├── credentials.json
+│
 └── README.md
 ```
+🔐 Segurança
+Boas práticas aplicadas:
 
----
+✔️ Credenciais não ficam no código
 
-## 🔐 Segurança
+✔️ Uso de variáveis de ambiente (.env)
 
-✔️ Tokens e credenciais **NÃO ficam no código**
-✔️ Uso de `.env` para secrets
-✔️ `.gitignore` configurado para proteger dados sensíveis
+✔️ Arquivos sensíveis ignorados pelo Git
 
-Arquivos sensíveis ignorados:
 
-* `.env`
-* `credentials.json`
-* `__pycache__/`
-
----
-
-## ⚙️ Variáveis de Ambiente
-
-Crie um arquivo `.env` baseado no `.env.example`:
-
+▶️ Executando Localmente
+Criar ambiente virtual:
 ```
-JIRA_BASE_URL=https://seudominio.atlassian.net
-JIRA_USER=seu_email@empresa.com
-JIRA_PASSWORD=seu_token_ou_senha
-TELEGRAM_BOT_TOKEN=seu_token_do_bot
-```
-
----
-
-## ▶️ Como Executar Localmente
-
-```bash
+Bash
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+```
+Ativar ambiente:
+```
+Windows: venv\Scripts\activate
+```
+Instalar dependências:
+```
+Bash
 pip install -r requirements.txt
+```
+Executar o bot:
+```
+Bash
 python bot.py
 ```
 
----
+🤝 Contribuição
+Este projeto é interno, mas melhorias podem ser feitas via:
 
-## 📌 Status do Projeto
+Criar uma branch
 
-🟢 Em produção local
+Implementar melhorias
 
----
+Criar Pull Request
 
-## 👨‍💻 Desenvolvedor
-
-**Matheus Eduardo**
-📧 [matheus.eduardo@queonetics.com](mailto:matheus.eduardo@queonetics.com)
-
----
-
-> Projeto corporativo — uso interno
+👨‍💻 Desenvolvedor
+```
+Matheus Eduardo
+📧 matheus.eduardo@queonetics.com
+```
