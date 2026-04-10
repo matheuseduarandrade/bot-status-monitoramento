@@ -1,4 +1,6 @@
 import telebot
+from relatorio_pdf import gerar_pdf
+from jira import obter_chamados_atrasados
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from google_agenda import obter_agenda_do_dia, AGENDAS
 from datetime import datetime
@@ -60,7 +62,8 @@ def registrar_acao_admin(acao):
 def menu_principal(user_id):
     markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
-        InlineKeyboardButton("📅 Minha Agenda", callback_data="menu_agenda")
+        InlineKeyboardButton("📅 Minha Agenda", callback_data="menu_agenda"),
+        InlineKeyboardButton("📄 Relatório ZECA", callback_data="zeca_monitor")
     )
 
     if eh_admin(user_id):
@@ -348,14 +351,116 @@ def callbacks(call):
 
     elif call.data == "menu_telemetria":
         bot.answer_callback_query(call.id, "Módulo em desenvolvimento...", show_alert=True)
+        
+    elif call.data == "zeca_monitor":
+
+        if call.from_user.id != 820571529:
+            bot.answer_callback_query(call.id, "⛔ Acesso restrito", show_alert=True)
+            return
+
+        bot.answer_callback_query(call.id, "Gerando relatório...")
+
+        try:
+            dados = obter_chamados_pendentes_por_responsavel()
+
+            # achatar lista
+            pendencias = []
+            for resp, chamados in dados.items():
+                for c in chamados:
+                    pendencias.append({
+                        "key": c["chave"],
+                        "cliente": resp,
+                        "data": c["atualizado_em"],
+                        "link": f"{os.getenv('JIRA_BASE_URL')}/browse/{c['chave']}"
+                    })
+
+            atrasados = obter_chamados_atrasados()
+
+            pdf_path = gerar_pdf(pendencias, atrasados)
+
+            with open(pdf_path, "rb") as pdf:
+                bot.send_document(
+                    chat_id=820571529,
+                    document=pdf,
+                    filename="relatorio_zeca_monitor.pdf"
+                )
+
+            os.remove(pdf_path)
+
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ Erro ao gerar relatório:\n{str(e)}")
 
 from threading import Thread
 from alerta_agendamentos import iniciar_alerta
+from alerta_zeca import iniciar_alerta_zeca
+
 
 Thread(target=iniciar_alerta, daemon=True).start()
+Thread(target=iniciar_alerta_zeca, daemon=True).start()
 
 
 print("\nBot rodando...")
+
+# ============================================
+# ENVIO DE MENSAGEM MANUAL PARA O GRUPO
+# ============================================
+
+GRUPO_ID = int(os.getenv("GRUPO_ID"))  # Adicione no .env
+
+@bot.message_handler(commands=["broadcast"])
+def broadcast(mensagem):
+    if not eh_admin(mensagem.from_user.id):
+        bot.reply_to(mensagem, "⛔ Acesso negado.")
+        return
+
+    # Pega o texto depois do comando
+    partes = mensagem.text.split(" ", 1)
+    if len(partes) < 2 or not partes[1].strip():
+        bot.reply_to(
+            mensagem,
+            "⚠️ *Uso correto:*\n`/broadcast Sua mensagem aqui`",
+            parse_mode="Markdown"
+        )
+        return
+
+    texto_enviar = partes[1].strip()
+
+    try:
+        bot.send_message(
+            GRUPO_ID,
+            f"📢 *Aviso do Monitoramento:*\n\n{texto_enviar}",
+            parse_mode="Markdown"
+        )
+        registrar_acao_admin(f"Broadcast enviado: {texto_enviar[:30]}...")
+        bot.reply_to(mensagem, "✅ Mensagem enviada ao grupo!")
+    except Exception as e:
+        bot.reply_to(mensagem, f"❌ Erro ao enviar:\n`{str(e)}`", parse_mode="Markdown")
+
+
+@bot.message_handler(commands=["mensagem"])
+def mensagem_livre(mensagem):
+    """Envia mensagem livre sem prefixo de 'Aviso'"""
+    if not eh_admin(mensagem.from_user.id):
+        bot.reply_to(mensagem, "⛔ Acesso negado.")
+        return
+
+    partes = mensagem.text.split(" ", 1)
+    if len(partes) < 2 or not partes[1].strip():
+        bot.reply_to(
+            mensagem,
+            "⚠️ *Uso correto:*\n`/mensagem Sua mensagem aqui`",
+            parse_mode="Markdown"
+        )
+        return
+
+    texto_enviar = partes[1].strip()
+
+    try:
+        bot.send_message(GRUPO_ID, texto_enviar, parse_mode="Markdown")
+        registrar_acao_admin(f"Mensagem livre enviada: {texto_enviar[:30]}...")
+        bot.reply_to(mensagem, "✅ Mensagem enviada!")
+    except Exception as e:
+        bot.reply_to(mensagem, f"❌ Erro:\n`{str(e)}`", parse_mode="Markdown")
 
 while True:
     try:

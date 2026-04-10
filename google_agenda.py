@@ -15,8 +15,8 @@ AGENDAS = {
     "Mateus Accioly": "mateus.accioly@queonetics.com",
     "Lucas Dias": "lucas.dias@queonetics.com",
     "Matheus Eduardo": "matheus.eduardo@queonetics.com",
-    "Lucas Paixao": "lucas.paixao@queonetics.com"
-    
+    "Lucas Paixao": "lucas.paixao@queonetics.com",
+    "Pedro Miguel": "pedro.miguel@queonetics.com"
 }
 
 def obter_agenda_do_dia(nome):

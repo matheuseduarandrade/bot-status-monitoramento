@@ -189,3 +189,124 @@ def buscar_agendamentos_hoje():
     data = response.json()
 
     return data.get("issues", [])
+
+def obter_chamados_atrasados():
+    """
+    Chamados com agendamento no passado e não concluídos
+    """
+
+    url = f"{JIRA_BASE_URL}/rest/api/2/search"
+
+    jql = """
+    project in (PROMONITOR, MONITORAR)
+    AND status not in (Done, Cancelado)
+    AND "Agendamento" < startOfDay()
+    ORDER BY "Agendamento" ASC
+    """
+
+    response = requests.get(
+        url,
+        params={
+            "jql": jql,
+            "maxResults": 200,
+            "fields": "key,summary,customfield_10622,customfield_15615"
+        },
+        auth=HTTPBasicAuth(JIRA_USER, JIRA_PASSWORD),
+        headers={"Accept": "application/json"}
+    )
+
+    data = response.json()
+    issues = data.get("issues", [])
+
+    resultado = []
+
+    for issue in issues:
+        fields = issue["fields"]
+
+        agendamento = fields.get("customfield_10622")
+        branch = fields.get("customfield_15615")
+
+        data_formatada = "N/D"
+
+        if agendamento:
+            try:
+                dt = datetime.strptime(agendamento, "%Y-%m-%dT%H:%M:%S.%f%z")
+                dt = dt.astimezone().replace(tzinfo=None)
+                data_formatada = dt.strftime("%d/%m/%Y %H:%M")
+            except:
+                pass
+
+        resultado.append({
+            "key": issue["key"],
+            "resumo": fields.get("summary", ""),
+            "data": data_formatada,
+            "cliente": branch if isinstance(branch, str) else "N/D",
+            "link": f"{JIRA_BASE_URL}/browse/{issue['key']}"
+        })
+
+    return resultado
+
+def obter_chamados_atrasados():
+    from datetime import datetime
+
+    url = f"{JIRA_BASE_URL}/rest/api/2/search"
+
+    jql = """
+    project in (PROMONITOR, MONITORAR)
+    AND status in ("MONITORAMENTO - A FAZER", "A FAZER - MONITORAMENTO PROJETOS")
+    AND "Agendamento" IS NOT EMPTY
+    ORDER BY "Agendamento" ASC
+    """
+
+    response = requests.get(
+        url,
+        params={
+            "jql": jql,
+            "maxResults": 500,
+            "fields": "key,summary,customfield_10622,customfield_15615,assignee"
+        },
+        auth=HTTPBasicAuth(JIRA_USER, JIRA_PASSWORD),
+        headers={"Accept": "application/json"}
+    )
+
+    if response.status_code != 200:
+        raise Exception(f"Erro ao buscar atrasados: {response.status_code}")
+
+    issues = response.json().get("issues", [])
+
+    hoje = datetime.now().date()
+
+    atrasados_hoje = []
+    atrasados_anteriores = []
+
+    for issue in issues:
+        fields = issue["fields"]
+
+        agendamento_raw = fields.get("customfield_10622")
+        if not agendamento_raw:
+            continue
+
+        try:
+            data_agendada = datetime.strptime(
+                agendamento_raw[:19],
+                "%Y-%m-%dT%H:%M:%S"
+            ).date()
+        except:
+            continue
+
+        item = {
+            "key": issue["key"],
+            "data": data_agendada.strftime("%d/%m/%Y"),
+            "cliente": fields.get("customfield_15615", "N/D"),
+            "link": f"{JIRA_BASE_URL}/browse/{issue['key']}"
+        }
+
+        if data_agendada == hoje:
+            atrasados_hoje.append(item)
+        elif data_agendada < hoje:
+            atrasados_anteriores.append(item)
+
+    return {
+        "hoje": atrasados_hoje,
+        "anteriores": atrasados_anteriores
+    }
