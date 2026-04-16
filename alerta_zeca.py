@@ -73,7 +73,7 @@ def enviar_alerta():
 def iniciar_alerta_zeca():
     print("Monitor ZECA iniciado")
 
-    horarios_disparo = ["10:29"]  # 👈 COLOCA AQUI (horário de teste)
+    horarios_disparo = ["08:00", "18:00", "22:00"]  # 👈 COLOCA AQUI (horário de teste)
 
     ja_enviado_hoje = set()
 

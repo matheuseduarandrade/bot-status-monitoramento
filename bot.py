@@ -468,3 +468,4 @@ while True:
     except Exception as e:
         print(f" Erro crítico: {e}")
         time.sleep(5)
+    
