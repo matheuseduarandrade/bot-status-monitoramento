@@ -4,6 +4,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from requests.auth import HTTPBasicAuth
 
+
 load_dotenv()
 
 JIRA_BASE_URL = os.getenv("JIRA_BASE_URL")
