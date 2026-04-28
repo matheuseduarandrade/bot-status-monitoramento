@@ -1,13 +1,16 @@
 """
-ia_resposta.py - v2
-Groq + Jira com suporte a nomes compostos, filtro por projeto e técnico em campo.
+ia_resposta.py - v6
+System prompt completo com contexto real do Jira da Queonetics.
 """
 
 import os
 import re
+import json
 import requests
 from groq import Groq
-from jira import separar_pendencias
+from datetime import datetime, timezone, timedelta
+from jira import buscar_todas_issues, separar_pendencias, JQL_PENDENTES
+from tecnicos import encontrar_tecnico
 from dotenv import load_dotenv
 from requests.auth import HTTPBasicAuth
 
@@ -15,14 +18,66 @@ load_dotenv()
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-JIRA_BASE_URL  = os.getenv("JIRA_BASE_URL")
-JIRA_USER      = os.getenv("JIRA_USER")
-JIRA_PASSWORD  = os.getenv("JIRA_PASSWORD")
-CAMPO_TECNICO  = os.getenv("JIRA_ID_TECNICO")          # ex: customfield_XXXXX
-CAMPO_PROJETO  = os.getenv("JIRA_ID_PROJETO", "")      # ex: customfield_YYYYY  (se tiver)
+JIRA_BASE_URL     = os.getenv("JIRA_BASE_URL")
+JIRA_USER         = os.getenv("JIRA_USER")
+JIRA_PASSWORD     = os.getenv("JIRA_PASSWORD")
+CAMPO_TECNICO     = os.getenv("JIRA_ID_TECNICO")
+CAMPO_PROJETO     = os.getenv("JIRA_ID_PROJETO", "")
+CAMPO_AGENDAMENTO = "customfield_10622"
+CAMPO_BRANCH      = "customfield_15615"
+CAMPO_PLACA       = "customfield_10900"  # ajuste se necessário
 
-AUTH = HTTPBasicAuth(JIRA_USER, JIRA_PASSWORD)
+AUTH    = HTTPBasicAuth(JIRA_USER, JIRA_PASSWORD)
 HEADERS = {"Accept": "application/json"}
+
+TZ_BRASILIA = timezone(timedelta(hours=-3))
+
+
+# ──────────────────────────────────────────
+# OPERADORES CONHECIDOS
+# ──────────────────────────────────────────
+
+OPERADORES = [
+    "Rene Filho",
+    "Eduardo Andrade",
+    "Lucas Paixão",
+    "Lucas Dias",
+    "Pedro Miguel",
+    "Diego Oliveira",
+    "Felipe Silva",
+    "M. Vinicius",
+    "Marcos Vinicius",
+]
+
+def encontrar_operador(nome: str) -> str | None:
+    nome_norm = nome.lower().strip()
+    for op in OPERADORES:
+        if nome_norm in op.lower():
+            return op
+    return None
+
+
+# ──────────────────────────────────────────
+# CONVERSÃO DE DATAS
+# ──────────────────────────────────────────
+
+def utc_para_brasilia(dt_str: str) -> datetime | None:
+    if not dt_str:
+        return None
+    try:
+        dt_utc = datetime.strptime(dt_str[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        return dt_utc.astimezone(TZ_BRASILIA)
+    except Exception:
+        return None
+
+def formatar_horario(dt_str: str) -> str:
+    dt = utc_para_brasilia(dt_str)
+    return dt.strftime("%H:%M") if dt else "N/D"
+
+def formatar_data(dt_str: str) -> str:
+    dt = utc_para_brasilia(dt_str)
+    return dt.strftime("%d/%m/%Y") if dt else "N/D"
+
 
 # ──────────────────────────────────────────
 # MAPEAMENTO DE STATUS
@@ -30,22 +85,36 @@ HEADERS = {"Accept": "application/json"}
 
 STATUS_DESCRICAO = {
     "sem reagendamento":                "✅ Concluído",
-    "com reagendamento":                "🔄 Concluído — voltou para reagendar nova data",
+    "com reagendamento":                "🔄 Concluído com reagendamento — nova data necessária",
     "a fazer - monitoramento projetos": "🕐 Não iniciado",
     "monitoramento - a fazer":          "🕐 Não iniciado",
-    "monitoramento - fazendo":          "🔧 Em andamento/encerramento",
-    "monitorameto - fazendo":           "🔧 Em andamento/encerramento",
-    "aguardando assinatura da os":      "⏳ Pendente de informações/encerramento",
+    "monitoramento - fazendo":          "🔧 Em andamento",
+    "monitorameto - fazendo":           "🔧 Em andamento",
+    "aguardando assinatura da os":      "⏳ Aguardando assinatura da OS",
     "fazendo - monitoramento projetos": "🔧 Em andamento",
-    "selected for development":         "⏳ Pendente de informações/encerramento",
+    "selected for development":         "⏳ Pendente de encerramento",
     "backlog":                          "🕐 Não iniciado",
 }
+
+STATUS_ENCERRAMENTO = {"aguardando assinatura da os", "selected for development"}
 
 def traduzir_status(s: str) -> str:
     return STATUS_DESCRICAO.get(s.strip().lower(), s)
 
 def eh_reagendamento(s: str) -> bool:
     return s.strip().lower() == "com reagendamento"
+
+def eh_encerramento(s: str) -> bool:
+    return s.strip().lower() in STATUS_ENCERRAMENTO
+
+FILTRO_PARA_STATUS = {
+    "encerramento":  STATUS_ENCERRAMENTO,
+    "nao_iniciado":  {"a fazer - monitoramento projetos", "monitoramento - a fazer", "backlog"},
+    "andamento":     {"monitoramento - fazendo", "monitorameto - fazendo", "fazendo - monitoramento projetos"},
+    "reagendamento": {"com reagendamento"},
+    "concluido":     {"sem reagendamento", "com reagendamento"},
+}
+
 
 # ──────────────────────────────────────────
 # DETECÇÃO DE INTENÇÃO
@@ -60,238 +129,443 @@ def extrair_chave_chamado(texto: str) -> str | None:
     m = re.search(r"\b([A-Z][A-Z0-9]+-\d+)\b", texto)
     return m.group(1) if m else None
 
+
 # ──────────────────────────────────────────
-# EXTRAÇÃO INTELIGENTE VIA IA
+# EXTRAÇÃO DE FILTROS VIA IA
 # ──────────────────────────────────────────
 
 def extrair_filtros_ia(texto: str) -> dict:
-    """
-    Usa a IA para extrair filtros da pergunta: nome do técnico e projeto.
-    Retorna dict com chaves 'tecnico' e 'projeto' (podem ser None).
-    """
     prompt = f"""
-Extraia do texto abaixo:
-1. O nome completo do técnico (se mencionado) — pode ser composto como "Marcos José de Oliveira"
-2. O nome do projeto (se mencionado) — ex: "Input Solar", "PROMONITOR", "MONITORAR"
+Você é um assistente que extrai filtros de consultas sobre chamados do Jira de uma empresa de monitoramento veicular.
 
-Responda APENAS em JSON, sem explicações, sem markdown. Exemplo:
-{{"tecnico": "Marcos José de Oliveira", "projeto": "Input Solar"}}
+Estrutura dos chamados:
+- "técnico em campo": profissional que vai fisicamente ao cliente realizar o serviço
+- "responsável/operador": pessoa do monitoramento que gerencia o chamado (ex: Lucas Paixão, Pedro Miguel, Eduardo Andrade, Lucas Dias, Felipe Silva, Diego Oliveira, Rene Filho, M. Vinicius)
+- "branch": filial/localização do cliente (ex: "Femsa - Santa Maria RS", "Solar BR - Caruaru PE")
+- "projeto": nome do projeto (ex: "Input Solar", "Upgrade Rotograma Femsa 360")
 
-Se não encontrar um dos campos, use null.
+Extraia do texto:
+1. "tecnico": nome do técnico em campo (se mencionado)
+2. "operador": nome do operador/responsável (se mencionado)  
+3. "branch": filial ou cliente (se mencionado)
+4. "projeto": nome do projeto (se mencionado)
+5. "status_filtro": 
+   "encerramento" | "nao_iniciado" | "andamento" | "reagendamento" | "concluido" | null
+6. "tempo":
+   "hoje" | "semana_passada" | "essa_semana" | null
+7. "ambiguo": true se o nome mencionado pode ser tanto técnico quanto operador (ex: "Lucas" pode ser Lucas Paixão operador ou Lucas técnico), false caso contrário
+
+Responda APENAS JSON puro:
+{{"tecnico": null, "operador": null, "branch": null, "projeto": null, "status_filtro": null, "tempo": null, "ambiguo": false}}
 
 Texto: {texto}
 """
     resp = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
-        max_tokens=100,
+        max_tokens=200,
         messages=[{"role": "user", "content": prompt}],
     )
     raw = resp.choices[0].message.content.strip()
     try:
-        import json
-        # remove possíveis backticks
         raw = re.sub(r"```.*?```", "", raw, flags=re.DOTALL).strip()
         return json.loads(raw)
     except Exception:
-        return {"tecnico": None, "projeto": None}
+        return {"tecnico": None, "operador": None, "branch": None,
+                "projeto": None, "status_filtro": None, "tempo": None, "ambiguo": False}
+
 
 # ──────────────────────────────────────────
-# BUSCA NO JIRA
+# HELPERS DE FILTRO
 # ──────────────────────────────────────────
 
-JQL_BASE = (
-    'project IN (MONITORAR, PROMONITOR) '
-    'AND status IN ('
-    '"Backlog", '
-    '"Selected for Development", '
-    '"Monitoramento - fazendo", '
-    '"Aguardando assinatura da OS", '
-    '"Fazendo - Monitoramento projetos", '
-    '"A FAZER - MONITORAMENTO PROJETOS", '
-    '"MONITORAMENTO - A FAZER"'
-    ')'
-)
+def norm(s: str) -> str:
+    import unicodedata
+    s = s.lower().strip()
+    s = unicodedata.normalize("NFD", s)
+    return "".join(c for c in s if unicodedata.category(c) != "Mn")
 
-def buscar_jira_raw(jql: str, fields: str, max_results: int = 200) -> list:
-    resp = requests.get(
-        f"{JIRA_BASE_URL}/rest/api/2/search",
-        auth=AUTH,
-        headers=HEADERS,
-        params={"jql": jql, "fields": fields, "maxResults": max_results},
-        timeout=15,
+def nome_bate(busca: str, campo: str) -> bool:
+    palavras = norm(busca).split()
+    campo_n  = norm(campo)
+    return all(p in campo_n for p in palavras)
+
+def obter_nome_tecnico(fields: dict) -> str:
+    raw = fields.get(CAMPO_TECNICO)
+    if isinstance(raw, dict):   return raw.get("value", "Não informado")
+    if isinstance(raw, list) and raw:
+        return raw[0].get("value", "Não informado") if isinstance(raw[0], dict) else str(raw[0])
+    if isinstance(raw, str):    return raw
+    return "Não informado"
+
+def obter_branch(fields: dict) -> str:
+    raw = fields.get(CAMPO_BRANCH)
+    if isinstance(raw, str):  return raw
+    if isinstance(raw, dict): return raw.get("value", "N/D")
+    return "N/D"
+
+def filtrar_por_tecnico(issues: list, tecnico: str) -> list:
+    if not tecnico: return issues
+    nome_resolvido = encontrar_tecnico(tecnico) or tecnico
+    return [i for i in issues
+            if nome_bate(nome_resolvido, obter_nome_tecnico(i["fields"])) or
+               nome_bate(nome_resolvido, (i["fields"].get("assignee") or {}).get("displayName", ""))]
+
+def filtrar_por_operador(issues: list, operador: str) -> list:
+    if not operador: return issues
+    return [i for i in issues
+            if nome_bate(operador, (i["fields"].get("assignee") or {}).get("displayName", ""))]
+
+def filtrar_por_branch(issues: list, branch: str) -> list:
+    if not branch: return issues
+    return [i for i in issues if nome_bate(branch, obter_branch(i["fields"]))]
+
+def filtrar_por_projeto(issues: list, projeto: str) -> list:
+    if not projeto: return issues
+    resultado = []
+    for issue in issues:
+        f           = issue["fields"]
+        proj_key    = issue["key"].split("-")[0].lower()
+        summary     = norm(f.get("summary") or "")
+        proj_custom = ""
+        if CAMPO_PROJETO:
+            raw = f.get(CAMPO_PROJETO)
+            proj_custom = norm(raw if isinstance(raw, str) else (raw or {}).get("value", ""))
+        if norm(projeto) in proj_key or norm(projeto) in summary or norm(projeto) in proj_custom:
+            resultado.append(issue)
+    return resultado
+
+
+# ──────────────────────────────────────────
+# BUSCA DE CHAMADOS HOJE
+# ──────────────────────────────────────────
+
+def buscar_chamados_hoje(tecnico: str = "", operador: str = "", branch: str = "") -> str:
+    jql = (
+        'project IN (MONITORAR, PROMONITOR) '
+        'AND "Agendamento" >= startOfDay() '
+        'AND "Agendamento" <= endOfDay() '
+        'ORDER BY "Agendamento" ASC'
     )
-    if resp.status_code != 200:
-        raise Exception(f"Erro Jira ({resp.status_code}): {resp.text[:200]}")
-    return resp.json().get("issues", [])
+    fields_q = f"key,assignee,status,summary,{CAMPO_TECNICO},{CAMPO_AGENDAMENTO},{CAMPO_BRANCH}"
 
+    issues = buscar_todas_issues(jql, fields_q)
+    issues = filtrar_por_tecnico(issues, tecnico)
+    issues = filtrar_por_operador(issues, operador)
+    issues = filtrar_por_branch(issues, branch)
+
+    hoje_fmt = datetime.now(TZ_BRASILIA).strftime("%d/%m/%Y")
+    partes = []
+    if tecnico:  partes.append(f"técnico '{tecnico}'")
+    if operador: partes.append(f"operador '{operador}'")
+    if branch:   partes.append(f"branch '{branch}'")
+    desc = f" ({' | '.join(partes)})" if partes else ""
+
+    linhas = [f"Chamados agendados para hoje ({hoje_fmt}){desc}: {len(issues)}"]
+
+    por_tecnico: dict = {}
+    for issue in issues:
+        f        = issue["fields"]
+        nome_tec = obter_nome_tecnico(f)
+        horario  = formatar_horario(f.get(CAMPO_AGENDAMENTO, ""))
+        branch_v = obter_branch(f)
+        status_r = f.get("status", {}).get("name", "N/D")
+
+        por_tecnico.setdefault(nome_tec, []).append({
+            "chave":   issue["key"],
+            "horario": horario,
+            "branch":  branch_v,
+            "status":  traduzir_status(status_r),
+        })
+
+    for tec, chamados in sorted(por_tecnico.items()):
+        linhas.append(f"\n👤 {tec} — {len(chamados)} chamado(s)")
+        for c in sorted(chamados, key=lambda x: x["horario"]):
+            linhas.append(f"  - {c['chave']} | ⏰ {c['horario']} | 📍 {c['branch']} | {c['status']}")
+
+    return "\n".join(linhas)
+
+
+# ──────────────────────────────────────────
+# BUSCA DE CONCLUÍDOS
+# ──────────────────────────────────────────
+
+def buscar_concluidos(tecnico: str = "", operador: str = "", tempo: str = "") -> str:
+    hoje = datetime.now(TZ_BRASILIA)
+
+    if tempo == "semana_passada":
+        dias = hoje.weekday()
+        seg  = hoje - timedelta(days=dias + 7)
+        dom  = seg + timedelta(days=6)
+        data_ini, data_fim = seg.strftime("%Y-%m-%d"), dom.strftime("%Y-%m-%d")
+        periodo = f"semana passada ({seg.strftime('%d/%m')} a {dom.strftime('%d/%m/%Y')})"
+    elif tempo == "essa_semana":
+        seg  = hoje - timedelta(days=hoje.weekday())
+        data_ini, data_fim = seg.strftime("%Y-%m-%d"), hoje.strftime("%Y-%m-%d")
+        periodo = f"esta semana ({seg.strftime('%d/%m')} a {hoje.strftime('%d/%m/%Y')})"
+    else:
+        data_ini = (hoje - timedelta(days=7)).strftime("%Y-%m-%d")
+        data_fim = hoje.strftime("%Y-%m-%d")
+        periodo  = "últimos 7 dias"
+
+    jql = (
+        f'project IN (MONITORAR, PROMONITOR) '
+        f'AND status = "Sem Reagendamento" '
+        f'AND updated >= "{data_ini}" AND updated <= "{data_fim}" '
+        f'ORDER BY updated DESC'
+    )
+    fields_q = f"key,assignee,updated,status,summary,{CAMPO_TECNICO}"
+    issues   = buscar_todas_issues(jql, fields_q)
+    issues   = filtrar_por_tecnico(issues, tecnico)
+    issues   = filtrar_por_operador(issues, operador)
+
+    partes = []
+    if tecnico:  partes.append(f"técnico '{tecnico}'")
+    if operador: partes.append(f"operador '{operador}'")
+    desc = f" ({' | '.join(partes)})" if partes else ""
+
+    linhas = [f"Chamados concluídos{desc} — {periodo}: {len(issues)}"]
+
+    por_tecnico: dict = {}
+    for issue in issues:
+        f        = issue["fields"]
+        nome_tec = obter_nome_tecnico(f)
+        updated  = formatar_data(f.get("updated", ""))
+        por_tecnico.setdefault(nome_tec, []).append({"chave": issue["key"], "data": updated})
+
+    for tec, chamados in sorted(por_tecnico.items(), key=lambda x: -len(x[1])):
+        linhas.append(f"\n👤 {tec} — {len(chamados)} concluído(s)")
+        for c in chamados:
+            linhas.append(f"  - {c['chave']} | {c['data']}")
+
+    return "\n".join(linhas)
+
+
+# ──────────────────────────────────────────
+# BUSCA GERAL
+# ──────────────────────────────────────────
 
 def buscar_contexto_jira(texto: str) -> str:
     linhas = []
 
-    # ── Chamado específico ──
+    # Chamado específico
     chave = extrair_chave_chamado(texto)
     if chave:
-        url = f"{JIRA_BASE_URL}/rest/api/2/issue/{chave}"
+        url  = f"{JIRA_BASE_URL}/rest/api/2/issue/{chave}"
         resp = requests.get(url, auth=AUTH, headers=HEADERS, timeout=10)
         if resp.status_code == 200:
-            fields = resp.json().get("fields", {})
-            assignee = fields.get("assignee")
-            status_raw = fields.get("status", {}).get("name", "N/D")
-            linhas.append(f"Chamado: {chave}")
-            linhas.append(f"Título: {fields.get('summary', 'N/D')}")
-            linhas.append(f"Status: {status_raw} → {traduzir_status(status_raw)}")
-            linhas.append(f"Responsável: {assignee['displayName'] if assignee else 'Sem responsável'}")
-            linhas.append(f"Última atualização: {fields.get('updated', '')[:10]}")
+            f          = resp.json().get("fields", {})
+            assignee   = f.get("assignee")
+            status_raw = f.get("status", {}).get("name", "N/D")
+            agend_raw  = f.get(CAMPO_AGENDAMENTO, "")
+            branch_v   = obter_branch(f)
+            tec        = obter_nome_tecnico(f)
+            operador   = assignee["displayName"] if assignee else "Sem responsável"
+            linhas += [
+                f"Chamado: {chave}",
+                f"Título: {f.get('summary', 'N/D')}",
+                f"Status: {status_raw} → {traduzir_status(status_raw)}",
+                f"Técnico em campo: {tec}",
+                f"Operador responsável: {operador}",
+                f"Branch: {branch_v}",
+                f"Atualizado: {formatar_data(f.get('updated', ''))}",
+            ]
+            if agend_raw:
+                linhas.append(f"Agendamento: {formatar_data(agend_raw)} às {formatar_horario(agend_raw)}")
             if eh_reagendamento(status_raw):
-                linhas.append("⚠️ ATENÇÃO: chamado voltou para reagendamento de nova data.")
+                linhas.append("⚠️ ATENÇÃO: chamado voltou para reagendamento — nova data necessária.")
         else:
             linhas.append(f"Chamado {chave} não encontrado.")
         return "\n".join(linhas)
 
-    # ── Extrai filtros via IA ──
-    filtros = extrair_filtros_ia(texto)
-    tecnico  = (filtros.get("tecnico") or "").strip()
-    projeto  = (filtros.get("projeto") or "").strip()
+    # Extrai filtros
+    filtros       = extrair_filtros_ia(texto)
+    tecnico       = (filtros.get("tecnico") or "").strip()
+    operador      = (filtros.get("operador") or "").strip()
+    branch        = (filtros.get("branch") or "").strip()
+    projeto       = (filtros.get("projeto") or "").strip()
+    status_filtro = filtros.get("status_filtro") or ""
+    tempo         = filtros.get("tempo") or ""
+    ambiguo       = filtros.get("ambiguo", False)
 
-    # Monta fields a buscar
-    fields_query = f"key,assignee,updated,status,summary,{CAMPO_TECNICO}"
+    # Nome ambíguo — pode ser técnico ou operador
+    if ambiguo and tecnico and not operador:
+        op_encontrado  = encontrar_operador(tecnico)
+        tec_encontrado = encontrar_tecnico(tecnico)
+        if op_encontrado and tec_encontrado:
+            return (
+                f"⚠️ O nome '{tecnico}' pode ser tanto um técnico em campo quanto um operador.\n"
+                f"Pode especificar? Ex:\n"
+                f"• '#jira chamados do {tecnico} técnico'\n"
+                f"• '#jira chamados do {tecnico} operador'"
+            )
+
+    # Chamados de hoje
+    if tempo == "hoje":
+        return buscar_chamados_hoje(tecnico=tecnico, operador=operador, branch=branch)
+
+    # Concluídos
+    if status_filtro == "concluido":
+        return buscar_concluidos(tecnico=tecnico, operador=operador, tempo=tempo)
+
+    # Busca geral pendentes
+    fields_q = f"key,assignee,updated,status,summary,{CAMPO_TECNICO},{CAMPO_BRANCH}"
     if CAMPO_PROJETO:
-        fields_query += f",{CAMPO_PROJETO}"
+        fields_q += f",{CAMPO_PROJETO}"
 
-    issues = buscar_jira_raw(JQL_BASE, fields_query)
+    issues = buscar_todas_issues(JQL_PENDENTES, fields_q)
 
-    # ── Filtra por técnico e/ou projeto ──
-    def normalizar(s: str) -> str:
-        return s.lower().strip()
+    if status_filtro and status_filtro in FILTRO_PARA_STATUS:
+        issues = [i for i in issues
+                  if norm(i["fields"].get("status", {}).get("name", "")) in FILTRO_PARA_STATUS[status_filtro]]
 
-    resultado = []
-    for issue in issues:
-        f = issue["fields"]
+    issues = filtrar_por_tecnico(issues, tecnico)
+    issues = filtrar_por_operador(issues, operador)
+    issues = filtrar_por_branch(issues, branch)
+    issues = filtrar_por_projeto(issues, projeto)
 
-        # Filtro por técnico em campo (campo customizado)
-        if tecnico:
-            raw_tec = f.get(CAMPO_TECNICO)
-            nome_tec = ""
-            if isinstance(raw_tec, dict):
-                nome_tec = raw_tec.get("value", "")
-            elif isinstance(raw_tec, list) and raw_tec:
-                nome_tec = raw_tec[0].get("value", "") if isinstance(raw_tec[0], dict) else str(raw_tec[0])
-            elif isinstance(raw_tec, str):
-                nome_tec = raw_tec
-
-            # Também verifica no assignee como fallback
-            assignee_nome = ""
-            if f.get("assignee"):
-                assignee_nome = f["assignee"].get("displayName", "")
-
-            tec_encontrado = (
-                normalizar(tecnico) in normalizar(nome_tec) or
-                normalizar(tecnico) in normalizar(assignee_nome)
-            )
-            if not tec_encontrado:
-                continue
-
-        # Filtro por projeto (nome do projeto ou campo customizado)
-        if projeto:
-            proj_key = issue["key"].split("-")[0].lower()
-            summary  = (f.get("summary") or "").lower()
-            proj_custom = ""
-            if CAMPO_PROJETO:
-                raw_proj = f.get(CAMPO_PROJETO)
-                if isinstance(raw_proj, str):
-                    proj_custom = raw_proj.lower()
-                elif isinstance(raw_proj, dict):
-                    proj_custom = raw_proj.get("value", "").lower()
-
-            proj_encontrado = (
-                normalizar(projeto) in proj_key or
-                normalizar(projeto) in summary or
-                normalizar(projeto) in proj_custom
-            )
-            if not proj_encontrado:
-                continue
-
-        resultado.append(issue)
-
-    # ── Monta contexto ──
-    if not resultado:
-        filtro_desc = []
-        if tecnico:
-            filtro_desc.append(f"técnico '{tecnico}'")
-        if projeto:
-            filtro_desc.append(f"projeto '{projeto}'")
-        linhas.append(
-            f"Nenhum chamado pendente encontrado"
-            + (f" para {' e '.join(filtro_desc)}." if filtro_desc else ".")
-        )
+    if not issues:
+        partes = []
+        if tecnico:       partes.append(f"técnico '{tecnico}'")
+        if operador:      partes.append(f"operador '{operador}'")
+        if branch:        partes.append(f"branch '{branch}'")
+        if projeto:       partes.append(f"projeto '{projeto}'")
+        if status_filtro: partes.append(f"status '{status_filtro}'")
+        linhas.append("Nenhum chamado pendente encontrado" +
+                      (f" para {' e '.join(partes)}." if partes else "."))
         return "\n".join(linhas)
 
-    filtro_desc = []
-    if tecnico:
-        filtro_desc.append(f"técnico '{tecnico}'")
-    if projeto:
-        filtro_desc.append(f"projeto '{projeto}'")
+    partes = []
+    if tecnico:       partes.append(f"técnico '{tecnico}'")
+    if operador:      partes.append(f"operador '{operador}'")
+    if branch:        partes.append(f"branch '{branch}'")
+    if projeto:       partes.append(f"projeto '{projeto}'")
+    if status_filtro: partes.append(f"status '{status_filtro}'")
+    desc = f" ({' | '.join(partes)})" if partes else ""
+    linhas.append(f"Total de chamados pendentes{desc}: {len(issues)}")
 
-    desc = f" ({' | '.join(filtro_desc)})" if filtro_desc else ""
-    linhas.append(f"Total de chamados pendentes{desc}: {len(resultado)}")
+    hoje      = datetime.now(TZ_BRASILIA)
+    reagend   = 0
+    encerram  = 0
 
-    reagendamentos = 0
-    from datetime import datetime
-    hoje = datetime.now()
-
-    for issue in resultado:
-        f       = issue["fields"]
-        chave   = issue["key"]
+    for issue in issues:
+        f          = issue["fields"]
+        chave      = issue["key"]
         status_raw = f.get("status", {}).get("name", "N/D")
-        status_desc = traduzir_status(status_raw)
-        updated = f.get("updated", "")[:10]
-        dias    = (hoje - datetime.strptime(updated, "%Y-%m-%d")).days if updated else "?"
-        reagend = ""
+        updated    = f.get("updated", "")[:10]
+        branch_v   = obter_branch(f)
+        tec        = obter_nome_tecnico(f)
+        try:
+            dias = (hoje.date() - datetime.strptime(updated, "%Y-%m-%d").date()).days
+        except Exception:
+            dias = "?"
+
+        tags = ""
         if eh_reagendamento(status_raw):
-            reagendamentos += 1
-            reagend = " ⚠️ REAGENDAMENTO"
+            reagend += 1
+            tags += " ⚠️ REAGENDAMENTO"
+        if eh_encerramento(status_raw):
+            encerram += 1
 
         linhas.append(
-            f"  - {chave} | {updated} | {dias} dias | {status_desc}{reagend}"
+            f"  - {chave} | {tec} | {branch_v} | {dias} dias | {traduzir_status(status_raw)}{tags}"
         )
 
-    if reagendamentos:
-        linhas.insert(1, f"  ↳ Com reagendamento: {reagendamentos}")
+    if reagend:   linhas.insert(1, f"  ↳ Com reagendamento: {reagend}")
+    if encerram and not status_filtro:
+        linhas.insert(1, f"  ↳ Pendentes de encerramento: {encerram}")
 
     return "\n".join(linhas)
+
+
+# ──────────────────────────────────────────
+# SYSTEM PROMPT COMPLETO
+# ──────────────────────────────────────────
+
+SYSTEM_PROMPT = f"""
+Você é o ZECA, assistente virtual do time de monitoramento da Queonetics.
+Responda sempre em português do Brasil, de forma educada, direta e objetiva.
+Use no máximo 1-2 emojis por mensagem. NUNCA invente dados.
+Hoje é {datetime.now(TZ_BRASILIA).strftime('%d/%m/%Y')} — horário de Brasília (UTC-3).
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+CONTEXTO DO SISTEMA
+━━━━━━━━━━━━━━━━━━━━━━━━
+A Queonetics é uma empresa de monitoramento veicular. Os chamados no Jira representam
+atendimentos técnicos realizados em veículos de clientes (frotas).
+
+PROJETOS:
+- PROMONITOR: chamados de projetos (ex: Upgrade Rotograma Femsa 360°, Input Solar)
+- MONITORAR: chamados de monitoramento geral
+
+CAMPOS PRINCIPAIS:
+- "Técnico em campo": profissional que vai fisicamente ao cliente realizar o serviço (ex: Anderson Fernandes de Amorim, Wallace Vitor Ferreira Silva)
+- "Responsável/Operador": pessoa do time de monitoramento que gerencia o chamado
+- "Branch via Argos": filial/localização do cliente (ex: "Femsa - Santa Maria RS", "Solar BR - Caruaru PE")
+- "Agendamento": data e hora marcada para o atendimento (já convertida para horário de Brasília)
+- "Placas": placa do veículo a ser atendido
+- "Tipo de serviço": o que será feito (ex: Telemetria Can + Rotograma + Autenticação)
+- "Tipo de requisição": Intervenção Física, Desinstalação/Aditivo, Atualização de Tecnologia
+
+OPERADORES DO MONITORAMENTO:
+Rene Filho, Eduardo Andrade, Lucas Paixão, Lucas Dias, Pedro Miguel, Diego Oliveira, Felipe Silva, M. Vinicius (Marcos Vinicius)
+
+STATUS DOS CHAMADOS:
+- "Monitoramento - A Fazer" / "A Fazer - Monitoramento Projetos" / "Backlog" → 🕐 Não iniciado
+- "Monitoramento - Fazendo" / "Fazendo - Monitoramento Projetos" → 🔧 Em andamento
+- "Aguardando Assinatura da OS" → ⏳ Aguardando assinatura da OS (pendente de encerramento)
+- "Selected for Development" → ⏳ Pendente de encerramento
+- "Sem Reagendamento" → ✅ Concluído
+- "Com Reagendamento" → 🔄 Concluído mas voltou para reagendar nova data (SEMPRE destaque!)
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+REGRAS DE RESPOSTA
+━━━━━━━━━━━━━━━━━━━━━━━━
+1. NUNCA invente chamados, técnicos, horários ou dados. Se não tiver no contexto do Jira fornecido, diga que não encontrou.
+2. Se os dados do Jira foram fornecidos no contexto, use-os fielmente para responder.
+3. Se não houver dados do Jira no contexto, oriente o usuário a usar #jira na pergunta.
+4. Quando listar chamados do dia, agrupe por técnico e mostre horário do agendamento e branch.
+5. Quando um chamado tiver status "Com Reagendamento", sempre destaque isso.
+6. "Lucas" pode ser o operador Lucas Paixão/Lucas Dias ou um técnico — se ambíguo, pergunte.
+7. Seja breve. Não repita informações desnecessariamente.
+"""
+
 
 # ──────────────────────────────────────────
 # GERAÇÃO DE RESPOSTA
 # ──────────────────────────────────────────
 
-SYSTEM_PROMPT = """
-Você é o ZECA, assistente de monitoramento da equipe de TI.
-Responda sempre em português do Brasil, de forma educada, direta e objetiva.
-Use no máximo 1-2 emojis por mensagem. Nunca invente dados.
-Organize listas com bullets. Seja breve.
+def truncar_contexto(contexto: str, limite_chars: int = 6000) -> str:
+    """Limita o contexto para evitar rate limit do Groq."""
+    if len(contexto) <= limite_chars:
+        return contexto
+    linhas = contexto.split("\n")
+    resultado = []
+    total = 0
+    for linha in linhas:
+        if total + len(linha) > limite_chars:
+            resultado.append("  ... (lista truncada — mostre apenas os totais acima)")
+            break
+        resultado.append(linha)
+        total += len(linha) + 1
+    return "\n".join(resultado)
 
-Status dos chamados:
-- Sem Reagendamento → Concluído
-- Com Reagendamento → Concluído, mas voltou para reagendar nova data (SEMPRE destaque!)
-- A Fazer / Monitoramento - A Fazer → Não iniciado
-- Monitoramento - Fazendo / Fazendo - Monitoramento Projetos → Em andamento
-- Aguardando Assinatura da OS / Selected for Development → Pendente de informações
-"""
 
 def gerar_resposta(pergunta: str, contexto_jira: str | None = None) -> str:
-    conteudo = (
-        f"Dados do Jira:\n\n{contexto_jira}\n\nResponda: {pergunta}"
-        if contexto_jira else pergunta
-    )
+    if contexto_jira:
+        contexto_safe = truncar_contexto(contexto_jira)
+        conteudo = f"Dados do Jira:\n\n{contexto_safe}\n\nPergunta: {pergunta}"
+    else:
+        conteudo = pergunta
     resp = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
-        max_tokens=600,
+        max_tokens=800,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user",   "content": conteudo},
         ],
     )
     return resp.choices[0].message.content.strip()
+
 
 # ──────────────────────────────────────────
 # PONTO DE ENTRADA

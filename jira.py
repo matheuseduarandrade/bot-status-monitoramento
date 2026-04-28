@@ -4,7 +4,6 @@ from datetime import datetime
 from dotenv import load_dotenv
 from requests.auth import HTTPBasicAuth
 
-
 load_dotenv()
 
 JIRA_BASE_URL = os.getenv("JIRA_BASE_URL")
@@ -12,128 +11,133 @@ JIRA_USER = os.getenv("JIRA_USER")
 JIRA_PASSWORD = os.getenv("JIRA_PASSWORD")
 CUSTOM_TECNICO_CAMPO = os.getenv("JIRA_ID_TECNICO")
 
+AUTH = HTTPBasicAuth(JIRA_USER, JIRA_PASSWORD)
+HEADERS = {"Accept": "application/json"}
+
 JQL_PENDENTES = (
     'project IN (MONITORAR, PROMONITOR) '
     'AND status IN ('
-    'Backlog, '
+    '"Backlog", '
     '"Selected for Development", '
     '"Monitoramento - fazendo", '
     '"Aguardando assinatura da OS", '
-    '"Fazendo - Monitoramento projetos"'
-    ')'
+    '"Fazendo - Monitoramento projetos", '
+    '"A FAZER - MONITORAMENTO PROJETOS", '
+    '"MONITORAMENTO - A FAZER"'
+    ') ORDER BY updated DESC'
 )
 
 
 def testar_conexao_jira():
-    """Testa se a autenticação com o Jira está funcionando"""
-    
     response = requests.get(
         f"{JIRA_BASE_URL}/rest/api/2/myself",
-        auth=HTTPBasicAuth(JIRA_USER, JIRA_PASSWORD),
+        auth=AUTH,
         timeout=10
     )
-
     if response.status_code != 200:
         raise Exception("Usuário ou senha do Jira inválidos")
-
     return True
 
 
+def buscar_todas_issues(jql: str, fields: str) -> list:
+    """Busca TODAS as issues com paginação automática."""
+    todas = []
+    start = 0
+    page_size = 100
+
+    while True:
+        resp = requests.get(
+            f"{JIRA_BASE_URL}/rest/api/2/search",
+            auth=AUTH,
+            headers=HEADERS,
+            params={
+                "jql": jql,
+                "fields": fields,
+                "maxResults": page_size,
+                "startAt": start,
+            },
+            timeout=20,
+        )
+        if resp.status_code != 200:
+            raise Exception(f"Erro ao consultar Jira ({resp.status_code})")
+
+        data = resp.json()
+        issues = data.get("issues", [])
+        todas.extend(issues)
+
+        total = data.get("total", 0)
+        start += len(issues)
+
+        if start >= total or not issues:
+            break
+
+    return todas
+
+
 def obter_chamados_pendentes():
-    """Retorna quantidade total de chamados pendentes"""
-
+    """Retorna quantidade total de chamados pendentes."""
     testar_conexao_jira()
-
-    params = {
-        "jql": JQL_PENDENTES,
-        "maxResults": 0
-    }
-
-    response = requests.get(
+    resp = requests.get(
         f"{JIRA_BASE_URL}/rest/api/2/search",
-        auth=HTTPBasicAuth(JIRA_USER, JIRA_PASSWORD),
-        params=params,
-        timeout=10
+        auth=AUTH,
+        params={"jql": JQL_PENDENTES, "maxResults": 0},
+        timeout=10,
     )
-
-    if response.status_code != 200:
-        raise Exception(f"Erro ao consultar Jira ({response.status_code})")
-
-    dados = response.json()
+    if resp.status_code != 200:
+        raise Exception(f"Erro ao consultar Jira ({resp.status_code})")
 
     return {
-        "total": dados.get("total", 0),
-        "atualizado_em": datetime.now().strftime("%d/%m/%Y %H:%M")
+        "total": resp.json().get("total", 0),
+        "atualizado_em": datetime.now().strftime("%d/%m/%Y %H:%M"),
     }
 
 
 def obter_chamados_pendentes_por_responsavel():
-    """Retorna chamados agrupados por responsável"""
-
+    """Retorna chamados agrupados por responsável, com paginação."""
     testar_conexao_jira()
 
-    params = {
-        "jql": JQL_PENDENTES,
-        "fields": f"key,assignee,updated,{CUSTOM_TECNICO_CAMPO}",
-        "maxResults": 100
-    }
+    fields = f"key,assignee,updated,status,{CUSTOM_TECNICO_CAMPO}"
+    issues = buscar_todas_issues(JQL_PENDENTES, fields)
 
-    response = requests.get(
-        f"{JIRA_BASE_URL}/rest/api/2/search",
-        auth=HTTPBasicAuth(JIRA_USER, JIRA_PASSWORD),
-        params=params,
-        timeout=15
-    )
-
-    if response.status_code != 200:
-        raise Exception(f"Erro ao consultar Jira ({response.status_code})")
-
-    issues = response.json().get("issues", [])
     hoje = datetime.now()
-
     resultado = {}
-    chaves_processadas = set()  # evita duplicação
+    chaves_processadas = set()
 
     for issue in issues:
-
         chave = issue["key"]
-
         if chave in chaves_processadas:
             continue
-
         chaves_processadas.add(chave)
 
-        fields = issue["fields"]
+        fields_data = issue["fields"]
 
-        raw_tecnico = fields.get(CUSTOM_TECNICO_CAMPO)
+        # Técnico em campo (customfield)
+        raw_tecnico = fields_data.get(CUSTOM_TECNICO_CAMPO)
         tecnico = "Não informado"
-
         if isinstance(raw_tecnico, dict):
             tecnico = raw_tecnico.get("value", "Não informado")
-
         elif isinstance(raw_tecnico, list) and raw_tecnico:
             item = raw_tecnico[0]
-            if isinstance(item, dict):
-                tecnico = item.get("value", "Não informado")
-
+            tecnico = item.get("value", "Não informado") if isinstance(item, dict) else str(item)
         elif isinstance(raw_tecnico, str):
             tecnico = raw_tecnico
 
-        assignee = fields.get("assignee")
+        assignee = fields_data.get("assignee")
         responsavel = assignee["displayName"] if assignee else "Sem responsável"
 
-        data_atualizacao = datetime.strptime(
-            fields["updated"][:19],
-            "%Y-%m-%dT%H:%M:%S"
-        )
+        status = fields_data.get("status", {}).get("name", "N/D")
 
+        data_atualizacao = datetime.strptime(
+            fields_data["updated"][:19], "%Y-%m-%dT%H:%M:%S"
+        )
         dias_pendentes = (hoje - data_atualizacao).days
 
         chamado = {
             "chave": chave,
             "tecnico": tecnico,
+            "status": status,
             "atualizado_em": data_atualizacao.strftime("%d/%m/%Y"),
-            "dias_pendentes": dias_pendentes
+            "dias_pendentes": dias_pendentes,
         }
 
         resultado.setdefault(responsavel, []).append(chamado)
@@ -142,32 +146,21 @@ def obter_chamados_pendentes_por_responsavel():
 
 
 def separar_pendencias(dados, somente_criticos=False):
-    """
-    Filtra chamados críticos.
-    Críticos = mais de 2 dias sem atualização
-    """
-
+    """Filtra chamados críticos (2+ dias sem atualização)."""
     resultado = {}
-
     for responsavel, chamados in dados.items():
-
-        if somente_criticos:
-            filtrados = [
-                c for c in chamados
-                if c["dias_pendentes"] >= 2
-            ]
-        else:
-            filtrados = chamados
-
+        filtrados = (
+            [c for c in chamados if c["dias_pendentes"] >= 2]
+            if somente_criticos
+            else chamados
+        )
         if filtrados:
             resultado[responsavel] = filtrados
-
     return resultado
 
+
 def buscar_agendamentos_hoje():
-
     url = f"{JIRA_BASE_URL}/rest/api/2/search"
-
     jql = """
     project in (PROMONITOR, MONITORAR)
     AND status in ("MONITORAMENTO - A FAZER", "A FAZER - MONITORAMENTO PROJETOS")
@@ -176,130 +169,58 @@ def buscar_agendamentos_hoje():
     AND "Agendamento" <= endOfDay()
     ORDER BY "Agendamento" ASC
     """
-
-    response = requests.get(
+    resp = requests.get(
         url,
-        params={
-            "jql": jql,
-            "maxResults": 500
-        },
-        auth=HTTPBasicAuth(JIRA_USER, JIRA_PASSWORD),
-        headers={"Accept": "application/json"}
+        params={"jql": jql, "maxResults": 500},
+        auth=AUTH,
+        headers=HEADERS,
     )
+    return resp.json().get("issues", [])
 
-    data = response.json()
-
-    return data.get("issues", [])
 
 def obter_chamados_atrasados():
-    """
-    Chamados com agendamento no passado e não concluídos
-    """
-
     url = f"{JIRA_BASE_URL}/rest/api/2/search"
-
-    jql = """
-    project in (PROMONITOR, MONITORAR)
-    AND status not in (Done, Cancelado)
-    AND "Agendamento" < startOfDay()
-    ORDER BY "Agendamento" ASC
-    """
-
-    response = requests.get(
-        url,
-        params={
-            "jql": jql,
-            "maxResults": 200,
-            "fields": "key,summary,customfield_10622,customfield_15615"
-        },
-        auth=HTTPBasicAuth(JIRA_USER, JIRA_PASSWORD),
-        headers={"Accept": "application/json"}
-    )
-
-    data = response.json()
-    issues = data.get("issues", [])
-
-    resultado = []
-
-    for issue in issues:
-        fields = issue["fields"]
-
-        agendamento = fields.get("customfield_10622")
-        branch = fields.get("customfield_15615")
-
-        data_formatada = "N/D"
-
-        if agendamento:
-            try:
-                dt = datetime.strptime(agendamento, "%Y-%m-%dT%H:%M:%S.%f%z")
-                dt = dt.astimezone().replace(tzinfo=None)
-                data_formatada = dt.strftime("%d/%m/%Y %H:%M")
-            except:
-                pass
-
-        resultado.append({
-            "key": issue["key"],
-            "resumo": fields.get("summary", ""),
-            "data": data_formatada,
-            "cliente": branch if isinstance(branch, str) else "N/D",
-            "link": f"{JIRA_BASE_URL}/browse/{issue['key']}"
-        })
-
-    return resultado
-
-def obter_chamados_atrasados():
-    from datetime import datetime
-
-    url = f"{JIRA_BASE_URL}/rest/api/2/search"
-
     jql = """
     project in (PROMONITOR, MONITORAR)
     AND status in ("MONITORAMENTO - A FAZER", "A FAZER - MONITORAMENTO PROJETOS")
     AND "Agendamento" IS NOT EMPTY
     ORDER BY "Agendamento" ASC
     """
-
-    response = requests.get(
+    resp = requests.get(
         url,
         params={
             "jql": jql,
             "maxResults": 500,
-            "fields": "key,summary,customfield_10622,customfield_15615,assignee"
+            "fields": "key,summary,customfield_10622,customfield_15615,assignee",
         },
-        auth=HTTPBasicAuth(JIRA_USER, JIRA_PASSWORD),
-        headers={"Accept": "application/json"}
+        auth=AUTH,
+        headers=HEADERS,
     )
+    if resp.status_code != 200:
+        raise Exception(f"Erro ao buscar atrasados: {resp.status_code}")
 
-    if response.status_code != 200:
-        raise Exception(f"Erro ao buscar atrasados: {response.status_code}")
-
-    issues = response.json().get("issues", [])
-
+    issues = resp.json().get("issues", [])
     hoje = datetime.now().date()
-
     atrasados_hoje = []
     atrasados_anteriores = []
 
     for issue in issues:
         fields = issue["fields"]
-
         agendamento_raw = fields.get("customfield_10622")
         if not agendamento_raw:
             continue
-
         try:
             data_agendada = datetime.strptime(
-                agendamento_raw[:19],
-                "%Y-%m-%dT%H:%M:%S"
+                agendamento_raw[:19], "%Y-%m-%dT%H:%M:%S"
             ).date()
-        except:
+        except Exception:
             continue
 
         item = {
             "key": issue["key"],
             "data": data_agendada.strftime("%d/%m/%Y"),
             "cliente": fields.get("customfield_15615", "N/D"),
-            "link": f"{JIRA_BASE_URL}/browse/{issue['key']}"
+            "link": f"{JIRA_BASE_URL}/browse/{issue['key']}",
         }
 
         if data_agendada == hoje:
@@ -307,7 +228,4 @@ def obter_chamados_atrasados():
         elif data_agendada < hoje:
             atrasados_anteriores.append(item)
 
-    return {
-        "hoje": atrasados_hoje,
-        "anteriores": atrasados_anteriores
-    }
+    return {"hoje": atrasados_hoje, "anteriores": atrasados_anteriores}
