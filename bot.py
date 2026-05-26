@@ -400,9 +400,22 @@ def mensagem_livre(mensagem):
 from threading import Thread
 from alerta_agendamentos import iniciar_alerta
 from alerta_zeca import iniciar_alerta_zeca
+from andina_new_flow import iniciar_alerta_andina
 
-Thread(target=iniciar_alerta, daemon=True).start()
-Thread(target=iniciar_alerta_zeca, daemon=True).start()
+Thread(
+    target=iniciar_alerta,
+    daemon=True
+).start()
+
+Thread(
+    target=iniciar_alerta_zeca,
+    daemon=True
+).start()
+
+Thread(
+    target=iniciar_alerta_andina,
+    daemon=True
+).start()
 
 print("\nBot rodando...")
 

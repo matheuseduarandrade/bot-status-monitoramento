@@ -1,3 +1,5 @@
+# alerta_agendamentos.py
+
 import time
 import os
 from datetime import datetime, timedelta
@@ -54,15 +56,15 @@ def atualizar_fila():
             continue
 
         try:
-            # PARSE CORRETO COM TIMEZONE
+
             data_agendada = datetime.strptime(
                 agendamento, "%Y-%m-%dT%H:%M:%S.%f%z"
             )
 
-            # CONVERTE PARA HORÁRIO LOCAL (BRASIL)
             data_agendada = data_agendada.astimezone().replace(tzinfo=None)
 
-        except:
+        except Exception as e:
+            print(f"Erro ao converter data: {e}")
             continue
 
         alerta = data_agendada - timedelta(minutes=20)
@@ -74,6 +76,10 @@ def atualizar_fila():
         auto = obter_valor_campo(fields.get("customfield_10624"))
         branch = obter_valor_campo(fields.get("customfield_15615"))
 
+        projeto = issue["key"].split("-")[0]
+
+        placas_issue = fields.get("customfield_10401") or []
+
         grupo = f"{tecnico}-{auto}-{data_agendada}"
 
         if grupo not in agrupados:
@@ -84,10 +90,20 @@ def atualizar_fila():
                 "auto": auto,
                 "horario": data_agendada,
                 "branch": branch,
-                "quantidade": 0
+                "quantidade": 0,
+                "placas": [],
+                "projeto": projeto
             }
 
         agrupados[grupo]["quantidade"] += 1
+
+        # SOMENTE MONITORAR MOSTRA PLACAS
+        if projeto == "MONITORAR":
+
+            for placa in placas_issue:
+
+                if placa not in agrupados[grupo]["placas"]:
+                    agrupados[grupo]["placas"].append(placa)
 
     for g in agrupados.values():
         nova_fila.append(g)
@@ -117,11 +133,14 @@ def print_fila():
         print(f"ATENDIMENTO: {horario}")
         print(f"ALERTA: {alerta_hora}")
         print(f"CHAMADOS: {alerta['quantidade']}")
+
+        if alerta["projeto"] == "MONITORAR":
+            print(f"PLACAS: {' | '.join(alerta['placas'])}")
+
         print("-----------------------------------")
 
     print(f"\nTOTAL ALERTAS: {len(fila_alertas)}")
     print("===========================================\n")
-
 
 def enviar_telegram(msg):
 
@@ -166,7 +185,19 @@ def verificar_alertas():
                 f"👨‍🔧 TÉCNICO: {alerta['tecnico']}\n"
                 f"🔧 AUTO-ELÉTRICA: {alerta['auto']}\n\n"
                 f"🔑 QUANTIDADE DE CHAMADOS: {alerta['quantidade']}\n"
-                f"📅 AGENDAMENTO: {data_formatada}\n\n"
+            )
+
+            # SOMENTE MONITORAR EXIBE PLACAS
+            if alerta["projeto"] == "MONITORAR" and alerta["placas"]:
+
+                placas_texto = " | ".join(alerta["placas"])
+
+                mensagem += (
+                    f"🚚 PLACAS: ({placas_texto})\n"
+                )
+
+            mensagem += (
+                f"\n📅 AGENDAMENTO: {data_formatada}\n\n"
                 f"📍 BRANCH ARGOS: {alerta['branch']}\n\n"
                 "==================================="
             )
