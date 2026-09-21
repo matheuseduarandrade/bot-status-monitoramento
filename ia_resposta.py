@@ -26,16 +26,16 @@ load_dotenv()
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-JIRA_BASE_URL     = os.getenv("JIRA_BASE_URL")
-JIRA_USER         = os.getenv("JIRA_USER")
-JIRA_PASSWORD     = os.getenv("JIRA_PASSWORD")
+JIRA_BASE_URL = os.getenv("JIRA_BASE_URL")
+JIRA_USER = os.getenv("JIRA_USER")
+JIRA_PASSWORD = os.getenv("JIRA_PASSWORD")
 
-CAMPO_TECNICO     = os.getenv("JIRA_ID_TECNICO")
-CAMPO_PROJETO     = os.getenv("JIRA_ID_PROJETO", "")
+CAMPO_TECNICO = os.getenv("JIRA_ID_TECNICO")
+CAMPO_PROJETO = os.getenv("JIRA_ID_PROJETO", "")
 
 CAMPO_AGENDAMENTO = "customfield_10622"
-CAMPO_BRANCH      = "customfield_15615"
-CAMPO_PLACA       = "customfield_10900"
+CAMPO_BRANCH = "customfield_15615"
+CAMPO_PLACA = "customfield_10900"
 
 AUTH = HTTPBasicAuth(JIRA_USER, JIRA_PASSWORD)
 
@@ -61,6 +61,7 @@ OPERADORES = [
     "Marcos Vinicius",
 ]
 
+
 def encontrar_operador(nome: str) -> str | None:
     nome_norm = nome.lower().strip()
 
@@ -73,6 +74,7 @@ def encontrar_operador(nome: str) -> str | None:
 # ──────────────────────────────────────────
 # STATUS
 # ──────────────────────────────────────────
+
 
 STATUS_DESCRICAO = {
     "sem reagendamento":                "✅ Concluído",
@@ -92,8 +94,10 @@ STATUS_ENCERRAMENTO = {
     "selected for development"
 }
 
+
 def traduzir_status(s: str) -> str:
     return STATUS_DESCRICAO.get(s.strip().lower(), s)
+
 
 def eh_reagendamento(s: str) -> bool:
     return s.strip().lower() == "com reagendamento"
@@ -102,12 +106,15 @@ def eh_reagendamento(s: str) -> bool:
 # GATILHOS JIRA
 # ──────────────────────────────────────────
 
+
 GATILHOS_JIRA = {
     "#jira",
 }
 
+
 def eh_mensagem_jira(texto: str) -> bool:
     return any(g in texto.lower() for g in GATILHOS_JIRA)
+
 
 def extrair_chave_chamado(texto: str) -> str | None:
     m = re.search(r"\b([A-Z][A-Z0-9]+-\d+)\b", texto)
@@ -117,6 +124,7 @@ def extrair_chave_chamado(texto: str) -> str | None:
 # ──────────────────────────────────────────
 # DETECÇÃO CASUAL
 # ──────────────────────────────────────────
+
 
 def eh_conversa_casual(texto: str) -> bool:
     t = texto.lower()
@@ -149,6 +157,7 @@ def eh_conversa_casual(texto: str) -> bool:
 # RESPOSTAS CASUAIS
 # ──────────────────────────────────────────
 
+
 RESPOSTAS_CASUAIS = {
     "bom dia": [
         "Bom diaaa ☕ Bora pra mais um dia de luta kkkkk",
@@ -178,6 +187,7 @@ RESPOSTAS_CASUAIS = {
     ],
 }
 
+
 def gerar_resposta_casual(texto: str) -> str:
     t = texto.lower()
 
@@ -202,6 +212,7 @@ def gerar_resposta_casual(texto: str) -> str:
 # DATAS
 # ──────────────────────────────────────────
 
+
 def utc_para_brasilia(dt_str: str) -> datetime | None:
     if not dt_str:
         return None
@@ -217,10 +228,12 @@ def utc_para_brasilia(dt_str: str) -> datetime | None:
     except Exception:
         return None
 
+
 def formatar_horario(dt_str: str) -> str:
     dt = utc_para_brasilia(dt_str)
 
     return dt.strftime("%H:%M") if dt else "N/D"
+
 
 def formatar_data(dt_str: str) -> str:
     dt = utc_para_brasilia(dt_str)
@@ -230,6 +243,7 @@ def formatar_data(dt_str: str) -> str:
 # ──────────────────────────────────────────
 # HELPERS
 # ──────────────────────────────────────────
+
 
 def norm(s: str) -> str:
     import unicodedata
@@ -242,11 +256,13 @@ def norm(s: str) -> str:
         if unicodedata.category(c) != "Mn"
     )
 
+
 def nome_bate(busca: str, campo: str) -> bool:
     palavras = norm(busca).split()
-    campo_n  = norm(campo)
+    campo_n = norm(campo)
 
     return all(p in campo_n for p in palavras)
+
 
 def obter_nome_tecnico(fields: dict) -> str:
     raw = fields.get(CAMPO_TECNICO)
@@ -265,6 +281,7 @@ def obter_nome_tecnico(fields: dict) -> str:
 
     return "Não informado"
 
+
 def obter_branch(fields: dict) -> str:
     raw = fields.get(CAMPO_BRANCH)
 
@@ -279,6 +296,7 @@ def obter_branch(fields: dict) -> str:
 # ──────────────────────────────────────────
 # BUSCA CHAMADO ESPECÍFICO
 # ──────────────────────────────────────────
+
 
 def buscar_chamado(chave: str) -> str:
 
@@ -320,6 +338,7 @@ def buscar_chamado(chave: str) -> str:
 # ──────────────────────────────────────────
 # CONTEXTO JIRA
 # ──────────────────────────────────────────
+
 
 def buscar_contexto_jira(texto: str) -> str:
 
@@ -367,6 +386,7 @@ def buscar_contexto_jira(texto: str) -> str:
 # ──────────────────────────────────────────
 # SYSTEM PROMPT
 # ──────────────────────────────────────────
+
 
 SYSTEM_PROMPT = f"""
 Você é o ZECA, assistente virtual do time de operações da Queonetics.
@@ -453,6 +473,7 @@ Hoje é {datetime.now(TZ_BRASILIA).strftime('%d/%m/%Y')}
 # IA
 # ──────────────────────────────────────────
 
+
 def truncar_contexto(
     contexto: str,
     limite_chars: int = 6000
@@ -480,6 +501,7 @@ def truncar_contexto(
 
     return "\n".join(resultado)
 
+
 def gerar_resposta(
     pergunta: str,
     contexto_jira: str | None = None
@@ -501,7 +523,7 @@ def gerar_resposta(
         conteudo = pergunta
 
     resp = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-20b",
         max_tokens=600,
         messages=[
             {
@@ -521,6 +543,7 @@ def gerar_resposta(
 # ENTRADA PRINCIPAL
 # ──────────────────────────────────────────
 
+
 def processar_mensagem(
     texto: str,
     nome_usuario: str = ""
@@ -532,6 +555,16 @@ def processar_mensagem(
         return "Oi 😄"
 
     try:
+
+        # FOTO DO ZECA
+        foto = detectar_pedido_foto(texto)
+
+        if foto:
+            return {
+                "tipo": "foto",
+                "arquivo": foto["arquivo"],
+                "legenda": foto["legenda"]
+            }
 
         # CASUAL
         if eh_conversa_casual(texto):
@@ -558,3 +591,45 @@ def processar_mensagem(
             "⚠️ Deu ruim aqui no servidor 😅\n"
             f"{str(e)}"
         )
+
+
+def detectar_pedido_foto(texto: str) -> str | None:
+    texto = texto.lower()
+
+    gatilhos = [
+        "manda uma foto sua",
+        "me manda uma foto sua",
+        "manda foto sua",
+        "foto sua",
+        "selfie",
+        "manda uma selfie",
+        "sua selfie",
+        "quero ver você",
+        "mostra sua foto",
+        "mostra você",
+        "manda uma foto",
+    ]
+
+    if not any(g in texto for g in gatilhos):
+        return None
+
+    fotos = [
+        {
+            "arquivo": "fotos/foto_praia.png",
+            "legenda": "Estou trabalhandona praia kkkk, quem pode pode 😎🌴"
+        },
+        {
+            "arquivo": "fotos/foto_escritorio.png",
+            "legenda": "Aqui carregando a operação nas costas enquanto o pessoal toma café ☕😂"
+        },
+        {
+            "arquivo": "fotos/foto_transito.png",
+            "legenda": "Saindo para resolver uns chamados externos 🚗😂"
+        },
+        {
+            "arquivo": "fotos/foto_casa.png",
+            "legenda": "Modo home office ativado 😎"
+        }
+    ]
+
+    return random.choice(fotos)

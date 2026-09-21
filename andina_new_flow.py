@@ -11,7 +11,7 @@ GRUPO_ID = int(os.getenv("GRUPO_ID"))
 
 bot = telebot.TeleBot(TOKEN)
 
- ALERTAS_ENVIADOS = set()
+ALERTAS_ENVIADOS = set()
 
 AGENDA_ANDINA = [
     {
@@ -28,13 +28,13 @@ AGENDA_ANDINA = [
     },
     {
         "cliente": "ANDINA DUQUE DE CAXIAS",
-        "tecnico": "Thiago de Almeida Deulefeu",
+        "tecnico": "",
         "dia_semana": 1,
         "inicio": "14:00",
     },
     {
         "cliente": "ANDINA JACAREPAGUÁ",
-        "tecnico": "Thiago de Almeida Deulefeu",
+        "tecnico": "",
         "dia_semana": 2,   # quarta
         "inicio": "08:00",
     },

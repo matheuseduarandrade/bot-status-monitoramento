@@ -229,3 +229,113 @@ def obter_chamados_atrasados():
             atrasados_anteriores.append(item)
 
     return {"hoje": atrasados_hoje, "anteriores": atrasados_anteriores}
+
+from datetime import datetime, timedelta
+
+
+def buscar_agendamentos_dia():
+    """
+    Retorna os atendimentos programados para hoje.
+
+    Utilizado pelo resumo diário das 07h.
+    Considera apenas chamados que ainda serão atendidos.
+    """
+
+    url = f"{JIRA_BASE_URL}/rest/api/2/search"
+
+    jql = """
+    project in (PROMONITOR, MONITORAR)
+    AND status in (
+        "MONITORAMENTO - A FAZER",
+        "A FAZER - MONITORAMENTO PROJETOS"
+    )
+    AND "Agendamento" IS NOT EMPTY
+    AND "Agendamento" >= startOfDay()
+    AND "Agendamento" <= endOfDay()
+    ORDER BY "Agendamento" ASC
+    """
+
+    resp = requests.get(
+        url,
+        params={
+            "jql": jql,
+            "maxResults": 1000
+        },
+        auth=AUTH,
+        headers=HEADERS
+    )
+
+    if resp.status_code != 200:
+        raise Exception(
+            f"Erro ao buscar agendamentos do dia: {resp.status_code}"
+        )
+
+    return resp.json().get("issues", [])
+
+
+def buscar_resumo_semanal():
+    """
+    Retorna todos os atendimentos programados da semana.
+
+    Segunda-feira 00:00
+    até
+    Sexta-feira 23:59
+
+    Projetos:
+    - MONITORAR
+    - PROMONITOR
+
+    Utilizado pelo resumo semanal.
+    """
+
+    hoje = datetime.now()
+
+    # Segunda-feira 00:00
+    inicio_semana = hoje - timedelta(days=hoje.weekday())
+
+    inicio_semana = inicio_semana.replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0
+    )
+
+    # Sexta-feira 23:59
+    fim_semana = inicio_semana + timedelta(days=4)
+
+    fim_semana = fim_semana.replace(
+        hour=23,
+        minute=59,
+        second=59,
+        microsecond=0
+    )
+
+    inicio_formatado = inicio_semana.strftime("%Y-%m-%d %H:%M")
+    fim_formatado = fim_semana.strftime("%Y-%m-%d %H:%M")
+
+    url = f"{JIRA_BASE_URL}/rest/api/2/search"
+
+    jql = f'''
+    project in (PROMONITOR, MONITORAR)
+    AND "Agendamento" IS NOT EMPTY
+    AND "Agendamento" >= "{inicio_formatado}"
+    AND "Agendamento" <= "{fim_formatado}"
+    ORDER BY "Agendamento" ASC
+    '''
+
+    resp = requests.get(
+        url,
+        params={
+            "jql": jql,
+            "maxResults": 2000
+        },
+        auth=AUTH,
+        headers=HEADERS
+    )
+
+    if resp.status_code != 200:
+        raise Exception(
+            f"Erro ao buscar resumo semanal: {resp.status_code}"
+        )
+
+    return resp.json().get("issues", [])
